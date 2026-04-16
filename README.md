@@ -46,20 +46,25 @@ CMAKE_ARGS="-DLLAMA_CUBLAS=on -DCMAKE_BUILD_TYPE=Release" FORCE_CMAKE=1 pip inst
 ```bash
 mkdir -p models/qwen2.5-3b models/gemma2-2b models/phi3-mini
 
-huggingface-cli download bartowski/Qwen2.5-3B-Instruct-GGUF \
+hf download bartowski/Qwen2.5-3B-Instruct-GGUF \
   --include "Qwen2.5-3B-Instruct-Q4_K_M.gguf" \
   --local-dir models/qwen2.5-3b
 
-huggingface-cli download bartowski/gemma-2-2b-it-GGUF \
+hf download bartowski/gemma-2-2b-it-GGUF \
   --include "gemma-2-2b-it-Q4_K_M.gguf" \
   --local-dir models/gemma2-2b
 
-huggingface-cli download bartowski/Phi-3-mini-4k-instruct-GGUF \
+hf download bartowski/Phi-3-mini-4k-instruct-GGUF \
   --include "Phi-3-mini-4k-instruct-Q4_K_M.gguf" \
   --local-dir models/phi3-mini
 ```
 
 주의: 모델 파일명은 리포지토리 업데이트로 바뀔 수 있으니, 필요하면 `--include` 패턴을 조정하세요.
+필요 시 먼저 로그인:
+
+```bash
+hf auth login
+```
 
 ## 5) 단일 모델 벤치마크
 
