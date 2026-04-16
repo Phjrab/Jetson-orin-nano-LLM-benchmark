@@ -1,0 +1,5 @@
+name,path,n_gpu_layers,n_ctx,max_tokens
+llama3_8b_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/llama3-8b/model.gguf,35,1024,128
+qwen2_5_3b_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/qwen2.5-3b/model.gguf,40,1024,128
+gemma2_2b_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/gemma2-2b/model.gguf,45,1024,128
+phi3_mini_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/phi3-mini/model.gguf,45,1024,128

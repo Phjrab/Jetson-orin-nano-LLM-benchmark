@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Local model assets
+models/
+*.gguf
+
+# Benchmark outputs
+comparison_results.csv
+comparison_results.png
+comparison_ranked.csv
+
+# OS/editor artifacts
+.DS_Store
+.vscode/
