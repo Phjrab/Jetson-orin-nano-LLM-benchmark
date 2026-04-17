@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--warmup", action="store_true")
-    parser.add_argument("--output-csv", default="comparison_results.csv")
+    parser.add_argument("--output-csv", default="outputs/comparison_results.csv")
     parser.add_argument("--fail-fast", action="store_true")
     return parser.parse_args()
 
@@ -99,12 +99,15 @@ def build_cmd(
     spec: ModelSpec,
     args: argparse.Namespace,
     json_out: str,
+    n_gpu_layers_override: Optional[int] = None,
 ) -> List[str]:
     model_max_tokens = spec.max_tokens if spec.max_tokens is not None else args.max_tokens
     model_n_ctx = spec.n_ctx if spec.n_ctx is not None else args.n_ctx
     model_n_gpu_layers = (
         spec.n_gpu_layers if spec.n_gpu_layers is not None else args.n_gpu_layers
     )
+    if n_gpu_layers_override is not None:
+        model_n_gpu_layers = n_gpu_layers_override
 
     cmd = [
         sys.executable,
@@ -141,6 +144,26 @@ def build_cmd(
     return cmd
 
 
+def build_gpu_retry_schedule(initial_layers: int) -> List[int]:
+    """Create a conservative retry schedule that degrades GPU offload on failure."""
+    schedule = [max(0, initial_layers)]
+
+    current = max(0, initial_layers)
+    while current > 0:
+        # Large step down first, then converge to CPU-only fallback.
+        current = max(0, current - 4)
+        if current not in schedule:
+            schedule.append(current)
+
+    return schedule
+
+
+def format_optional_float(value: Optional[float], precision: int = 3) -> str:
+    if value is None:
+        return ""
+    return f"{value:.{precision}f}"
+
+
 def main() -> int:
     args = parse_args()
     specs = load_model_specs(args.models_file)
@@ -157,17 +180,42 @@ def main() -> int:
         ) as temp_file:
             json_out = temp_file.name
 
-        cmd = build_cmd(benchmark_script=benchmark_script, spec=spec, args=args, json_out=json_out)
-        proc = subprocess.run(cmd, text=True, capture_output=True)
+        initial_n_gpu_layers = (
+            spec.n_gpu_layers if spec.n_gpu_layers is not None else args.n_gpu_layers
+        )
+        retry_schedule = build_gpu_retry_schedule(initial_n_gpu_layers)
 
-        if proc.stdout:
-            print(proc.stdout.strip())
-        if proc.stderr:
-            print(proc.stderr.strip(), file=sys.stderr)
+        proc = None
+        selected_n_gpu_layers = None
+
+        for attempt, n_gpu_layers in enumerate(retry_schedule, start=1):
+            if attempt > 1:
+                print(
+                    f"Retrying {spec.name} with lower n_gpu_layers={n_gpu_layers} "
+                    f"(attempt {attempt}/{len(retry_schedule)})"
+                )
+
+            cmd = build_cmd(
+                benchmark_script=benchmark_script,
+                spec=spec,
+                args=args,
+                json_out=json_out,
+                n_gpu_layers_override=n_gpu_layers,
+            )
+            proc = subprocess.run(cmd, text=True, capture_output=True)
+
+            if proc.stdout:
+                print(proc.stdout.strip())
+            if proc.stderr:
+                print(proc.stderr.strip(), file=sys.stderr)
+
+            if proc.returncode == 0:
+                selected_n_gpu_layers = n_gpu_layers
+                break
 
         elapsed = time.perf_counter() - started
 
-        if proc.returncode != 0:
+        if proc is None or proc.returncode != 0:
             error_row = {
                 "name": spec.name,
                 "path": spec.path,
@@ -177,6 +225,12 @@ def main() -> int:
                 "avg_ttft_s": "",
                 "avg_tps": "",
                 "peak_process_rss_mb": "",
+                "avg_gpu_util_pct": "",
+                "avg_power_w": "",
+                "peak_ram_vram_used_mb": "",
+                "peak_ram_vram_used_pct": "",
+                "peak_gpu_temp_c": "",
+                "peak_cpu_temp_c": "",
                 "elapsed_wall_s": f"{elapsed:.3f}",
             }
             results.append(error_row)
@@ -198,6 +252,12 @@ def main() -> int:
                 "avg_ttft_s": "",
                 "avg_tps": "",
                 "peak_process_rss_mb": "",
+                "avg_gpu_util_pct": "",
+                "avg_power_w": "",
+                "peak_ram_vram_used_mb": "",
+                "peak_ram_vram_used_pct": "",
+                "peak_gpu_temp_c": "",
+                "peak_cpu_temp_c": "",
                 "elapsed_wall_s": f"{elapsed:.3f}",
             }
             results.append(error_row)
@@ -220,11 +280,43 @@ def main() -> int:
             "avg_ttft_s": f"{summary.get('avg_ttft_s', 0.0):.3f}",
             "avg_tps": f"{summary.get('avg_tps', 0.0):.3f}",
             "peak_process_rss_mb": f"{summary.get('memory', {}).get('peak_process_rss_mb', 0.0):.2f}",
+            "avg_gpu_util_pct": format_optional_float(
+                summary.get("jetson_hardware", {}).get("avg_gpu_util_pct"),
+                precision=3,
+            ),
+            "avg_power_w": format_optional_float(
+                summary.get("jetson_hardware", {}).get("avg_power_w"),
+                precision=3,
+            ),
+            "peak_ram_vram_used_mb": format_optional_float(
+                summary.get("jetson_hardware", {}).get("peak_ram_vram_used_mb"),
+                precision=2,
+            ),
+            "peak_ram_vram_used_pct": format_optional_float(
+                summary.get("jetson_hardware", {}).get("peak_ram_vram_used_pct"),
+                precision=2,
+            ),
+            "peak_gpu_temp_c": format_optional_float(
+                summary.get("jetson_hardware", {}).get("peak_gpu_temp_c"),
+                precision=2,
+            ),
+            "peak_cpu_temp_c": format_optional_float(
+                summary.get("jetson_hardware", {}).get("peak_cpu_temp_c"),
+                precision=2,
+            ),
             "elapsed_wall_s": f"{elapsed:.3f}",
         }
         results.append(ok_row)
+        if selected_n_gpu_layers is not None and selected_n_gpu_layers != initial_n_gpu_layers:
+            print(
+                f"Recovered {spec.name} by lowering n_gpu_layers "
+                f"{initial_n_gpu_layers} -> {selected_n_gpu_layers}"
+            )
         print(
-            f"OK: {ok_row['name']} | TTFT={ok_row['avg_ttft_s']}s | TPS={ok_row['avg_tps']} | PeakRSS={ok_row['peak_process_rss_mb']}MB"
+            f"OK: {ok_row['name']} | TTFT={ok_row['avg_ttft_s']}s | "
+            f"TPS={ok_row['avg_tps']} | PeakRSS={ok_row['peak_process_rss_mb']}MB | "
+            f"GPU%={ok_row['avg_gpu_util_pct'] or 'N/A'} | "
+            f"PowerW={ok_row['avg_power_w'] or 'N/A'}"
         )
 
     out_fields = [
@@ -236,6 +328,12 @@ def main() -> int:
         "avg_ttft_s",
         "avg_tps",
         "peak_process_rss_mb",
+        "avg_gpu_util_pct",
+        "avg_power_w",
+        "peak_ram_vram_used_mb",
+        "peak_ram_vram_used_pct",
+        "peak_gpu_temp_c",
+        "peak_cpu_temp_c",
         "elapsed_wall_s",
     ]
 

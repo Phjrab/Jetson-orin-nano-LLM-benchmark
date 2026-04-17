@@ -10,10 +10,13 @@ models/
 *.gguf
 
 # Benchmark outputs
-comparison_results.csv
-comparison_results.png
-comparison_ranked.csv
+outputs/comparison_results.csv
+outputs/comparison_results.png
+outputs/comparison_ranked.csv
 
 # OS/editor artifacts
 .DS_Store
 .vscode/
+
+# Runtime server files
+.run/
