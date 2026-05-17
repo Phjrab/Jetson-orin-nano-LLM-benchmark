@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import psutil
@@ -78,6 +78,24 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=min(6, os.cpu_count() or 1),
         help="CPU threads for llama.cpp",
+    )
+    parser.add_argument(
+        "--n-batch",
+        type=int,
+        default=512,
+        help="Batch size for llama context allocation (lower can reduce memory pressure)",
+    )
+    parser.add_argument(
+        "--n-ubatch",
+        type=int,
+        default=512,
+        help="Micro-batch size for llama context allocation (lower can reduce memory pressure)",
+    )
+    parser.add_argument(
+        "--op-offload",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Operator offload mode for llama.cpp (auto/on/off)",
     )
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -461,8 +479,11 @@ def load_model(
     n_ctx: int,
     n_gpu_layers: int,
     n_threads: int,
+    n_batch: int,
+    n_ubatch: int,
+    op_offload: Optional[bool],
     seed: int,
-):
+) -> Tuple[Any, float, Dict[str, Any]]:
     try:
         from llama_cpp import Llama
     except ImportError as exc:
@@ -473,17 +494,69 @@ def load_model(
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    start = time.perf_counter()
-    llm = Llama(
-        model_path=model_path,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        n_threads=n_threads,
-        seed=seed,
-        verbose=False,
-    )
-    load_time_s = time.perf_counter() - start
-    return llm, load_time_s
+    # First attempt preserves user-requested settings. If context creation fails
+    # due transient/peak allocation pressure, retry with a smaller batch and
+    # explicit op-offload disable, which is more stable on Jetson memory budgets.
+    attempts: List[Dict[str, Any]] = [
+        {
+            "n_batch": max(1, int(n_batch)),
+            "n_ubatch": max(1, int(n_ubatch)),
+            "op_offload": op_offload,
+            "label": "requested",
+        }
+    ]
+
+    safe_batch = max(1, min(32, int(n_ctx)))
+    safe_ubatch = max(1, min(32, int(n_ctx)))
+    safe_attempt = {
+        "n_batch": safe_batch,
+        "n_ubatch": safe_ubatch,
+        "op_offload": False,
+        "label": "memory_safe_fallback",
+    }
+    if (
+        attempts[0]["n_batch"] != safe_attempt["n_batch"]
+        or attempts[0]["n_ubatch"] != safe_attempt["n_ubatch"]
+        or attempts[0]["op_offload"] is not False
+    ):
+        attempts.append(safe_attempt)
+
+    last_exc: Optional[Exception] = None
+    for idx, attempt in enumerate(attempts, start=1):
+        try:
+            start = time.perf_counter()
+            llm = Llama(
+                model_path=model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                n_threads=n_threads,
+                n_batch=attempt["n_batch"],
+                n_ubatch=attempt["n_ubatch"],
+                op_offload=attempt["op_offload"],
+                seed=seed,
+                verbose=False,
+            )
+            load_time_s = time.perf_counter() - start
+            if idx > 1:
+                print(
+                    "load_model fallback applied: "
+                    f"n_batch={attempt['n_batch']}, "
+                    f"n_ubatch={attempt['n_ubatch']}, "
+                    f"op_offload={attempt['op_offload']}"
+                )
+            return llm, load_time_s, attempt
+        except Exception as exc:
+            last_exc = exc
+            is_ctx_alloc_error = "Failed to create llama_context" in str(exc)
+            if not is_ctx_alloc_error or idx == len(attempts):
+                raise
+            print(
+                "Model context allocation failed; retrying with memory-safe settings "
+                f"({idx}/{len(attempts)})"
+            )
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def tokenize_count(llm, text: str) -> int:
@@ -562,6 +635,9 @@ def format_mb(value: Optional[float]) -> str:
 def main() -> int:
     args = parse_args()
 
+    op_offload_map = {"auto": None, "on": True, "off": False}
+    op_offload = op_offload_map[args.op_offload]
+
     if jtop is None:
         print(
             "Warning: jetson-stats (jtop) is not installed; "
@@ -574,11 +650,14 @@ def main() -> int:
 
     mem_before_load = get_process_rss_mb()
 
-    llm, load_time_s = load_model(
+    llm, load_time_s, load_cfg = load_model(
         model_path=args.model,
         n_ctx=args.n_ctx,
         n_gpu_layers=args.n_gpu_layers,
         n_threads=args.n_threads,
+        n_batch=args.n_batch,
+        n_ubatch=args.n_ubatch,
+        op_offload=op_offload,
         seed=args.seed,
     )
 
@@ -654,6 +733,10 @@ def main() -> int:
         "n_ctx": args.n_ctx,
         "n_gpu_layers": args.n_gpu_layers,
         "n_threads": args.n_threads,
+        "n_batch": load_cfg["n_batch"],
+        "n_ubatch": load_cfg["n_ubatch"],
+        "op_offload": load_cfg["op_offload"],
+        "load_profile": load_cfg["label"],
         "max_tokens": args.max_tokens,
         "memory": {
             "process_rss_before_load_mb": mem_before_load,

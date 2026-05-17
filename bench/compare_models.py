@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-ctx", type=int, default=1024)
     parser.add_argument("--n-gpu-layers", type=int, default=35)
     parser.add_argument("--n-threads", type=int, default=min(6, os.cpu_count() or 1))
+    parser.add_argument("--n-batch", type=int, default=512)
+    parser.add_argument("--n-ubatch", type=int, default=512)
+    parser.add_argument(
+        "--op-offload",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Operator offload mode passed through to benchmark.py",
+    )
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=42)
@@ -126,6 +134,12 @@ def build_cmd(
         str(model_n_gpu_layers),
         "--n-threads",
         str(args.n_threads),
+        "--n-batch",
+        str(args.n_batch),
+        "--n-ubatch",
+        str(args.n_ubatch),
+        "--op-offload",
+        args.op_offload,
         "--temperature",
         str(args.temperature),
         "--top-p",

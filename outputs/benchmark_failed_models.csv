@@ -1,3 +1,0 @@
-name,path,status,error,model_load_time_s,avg_ttft_s,avg_tps,peak_process_rss_mb,avg_gpu_util_pct,avg_power_w,peak_ram_vram_used_mb,peak_ram_vram_used_pct,peak_gpu_temp_c,peak_cpu_temp_c,elapsed_wall_s
-deepseek_r1_7b_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/deepseek-r1-7b/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf,failed,benchmark.py exited with code 1,,,,,,,,,,,4.374
-gemma2_2b_q4,/home/jetson_orin_nano/llm/local_llm_bench/models/gemma2-2b/gemma-2-2b-it-Q4_K_M.gguf,failed,benchmark.py exited with code 1,,,,,,,,,,,15.458
